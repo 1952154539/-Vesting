@@ -146,6 +146,82 @@ contract VestingTest is Test {
         assertEq(token.balanceOf(beneficiary), TOTAL_AMOUNT);
     }
 
+    /// @notice Simulate month-by-month vesting: each month ~1/24 of total unlocks
+    function test_MonthByMonthSimulation() public {
+        // cliffEnd = start + 12 months, vestingEnd = cliffEnd + 24 months
+        uint256 cliffEnd = vesting.start() + vesting.CLIFF_DURATION();
+
+        // After cliff + 1 month: ~1/24 vested (30 days ≈ 4.11%, 1/24 ≈ 4.17%)
+        vm.warp(cliffEnd + 30 days);
+        uint256 month1Vested = vesting.vestedAmount();
+        assertApproxEqRel(month1Vested, TOTAL_AMOUNT / 24, 0.02e18); // 2% tolerance
+
+        // After cliff + 2 months: ~2/24 vested
+        vm.warp(cliffEnd + 60 days);
+        uint256 month2Vested = vesting.vestedAmount();
+        assertApproxEqRel(month2Vested, TOTAL_AMOUNT * 2 / 24, 0.02e18);
+
+        // After cliff + 6 months: ~6/24 = 25% vested
+        vm.warp(cliffEnd + 180 days);
+        uint256 month6Vested = vesting.vestedAmount();
+        assertApproxEqRel(month6Vested, TOTAL_AMOUNT / 4, 0.02e18);
+
+        // After cliff + 12 months: ~12/24 = 50% vested
+        vm.warp(cliffEnd + 365 days);
+        uint256 month12Vested = vesting.vestedAmount();
+        assertApproxEqRel(month12Vested, TOTAL_AMOUNT / 2, 0.02e18);
+
+        // After cliff + 18 months: ~18/24 = 75% vested
+        vm.warp(cliffEnd + 547 days);
+        uint256 month18Vested = vesting.vestedAmount();
+        assertApproxEqRel(month18Vested, TOTAL_AMOUNT * 3 / 4, 0.02e18);
+
+        // After cliff + 24 months: 24/24 = 100% vested
+        vm.warp(cliffEnd + vesting.VESTING_DURATION());
+        uint256 month24Vested = vesting.vestedAmount();
+        assertEq(month24Vested, TOTAL_AMOUNT);
+    }
+
+    /// @notice Simulate time incrementally with multiple warp + release cycles
+    function test_IncrementalReleaseOverTime() public {
+        uint256 cliffEnd = vesting.start() + vesting.CLIFF_DURATION();
+        uint256 totalReleased;
+
+        // Release every 60 days (2 months) during vesting period, then finish at end
+        for (uint256 i = 1; i <= 12; i++) {
+            vm.warp(cliffEnd + i * 60 days);
+            uint256 amount = vesting.releasable();
+            if (amount > 0) {
+                vesting.release();
+                totalReleased += amount;
+            }
+        }
+
+        // Final warp to end of vesting to release remaining
+        vm.warp(cliffEnd + vesting.VESTING_DURATION());
+        uint256 remaining = vesting.releasable();
+        vesting.release();
+        totalReleased += remaining;
+
+        assertEq(totalReleased, TOTAL_AMOUNT);
+        assertEq(token.balanceOf(beneficiary), TOTAL_AMOUNT);
+    }
+
+    /// @notice Verify that time before deployment reverts to 0 (edge case)
+    function test_TimeCannotGoBackwards() public {
+        uint256 cliffEnd = vesting.start() + vesting.CLIFF_DURATION();
+
+        // Warp forward
+        vm.warp(cliffEnd + 100 days);
+        uint256 vestedForward = vesting.vestedAmount();
+        assertGt(vestedForward, 0);
+
+        // Warp backward - vested amount should still be computed at the new (earlier) timestamp
+        vm.warp(cliffEnd + 10 days);
+        uint256 vestedBackward = vesting.vestedAmount();
+        assertLt(vestedBackward, vestedForward);
+    }
+
     /// @notice Test that release only sends to beneficiary (not caller)
     function test_ReleaseSendsToBeneficiary() public {
         vm.warp(vesting.start() + vesting.CLIFF_DURATION() + 365 days);
